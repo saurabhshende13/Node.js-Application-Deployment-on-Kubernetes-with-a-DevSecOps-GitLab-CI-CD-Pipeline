@@ -1,0 +1,5 @@
+user_access:
+  access_as:
+    agent: {}
+  projects:
+    - id: saurabhpshende/Node.js-Application-Deployment-on-Kubernetes-with-a-DevSecOps-GitLab-CI-CD-Pipeline

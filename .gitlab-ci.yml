@@ -1,0 +1,80 @@
+stages:
+  - test
+  - build-scan
+  - push
+  - deploy
+
+variables:
+  IMAGE_TAG: $ECR_REPOSITORY_URI:latest
+
+# --- Run SonarQube test on Docker runner ---
+test:
+  stage: test
+  image: sonarsource/sonar-scanner-cli:latest
+  tags:
+    - docker-runner
+  script:
+    - sonar-scanner -Dsonar.projectKey=$SONAR_PROJECT_KEY -Dsonar.host.url=$SONAR_HOST_URL -Dsonar.login=$SONAR_TOKEN
+  only:
+    - main
+
+# --- Build Docker image & Trivy scan on Docker runner ---
+build-scan:
+  stage: build-scan
+  tags:
+    - docker-runner
+  before_script:
+    - apk add --no-cache curl tar
+    - curl -LO https://github.com/aquasecurity/trivy/releases/download/v0.49.1/trivy_0.49.1_Linux-64bit.tar.gz
+    - tar zxvf trivy_0.49.1_Linux-64bit.tar.gz
+    - mv trivy /usr/local/bin/
+  script:
+    - docker version
+    - docker build -t $IMAGE_TAG .
+    - docker save -o image.tar $IMAGE_TAG
+    - trivy image --format table --exit-code 0 --severity HIGH,CRITICAL $IMAGE_TAG
+    - mkdir -p trivy
+    - trivy image --format template --template "@contrib/html.tpl" --output trivy/trivy-report.html $IMAGE_TAG
+  artifacts:
+    paths:
+      - image.tar
+      - trivy/trivy-report.html
+    expire_in: 1 hour
+  only:
+    - main
+
+# --- Push Docker image to ECR using Docker runner ---
+push:
+  stage: push
+  image: docker:latest
+  tags:
+    - docker-runner
+  dependencies:
+    - build-scan
+  before_script:
+  - apk add --no-cache curl unzip python3 py3-pip aws-cli
+  - docker load -i image.tar
+  - aws configure set aws_access_key_id "$AWS_ACCESS_KEY_ID"
+  - aws configure set aws_secret_access_key "$AWS_SECRET_ACCESS_KEY"
+  - aws configure set region "$AWS_REGION"
+  - aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$ECR_REPOSITORY_URI"
+  script:
+    - docker push $IMAGE_TAG
+  only:
+    - main
+
+# --- Deploy to EKS using GitLab Kubernetes Agent ---
+deploy:
+  stage: deploy
+  image:
+    name: bitnami/kubectl:latest
+    entrypoint: [""]
+  tags:
+    - k8s-runner
+  script:
+    - kubectl apply -f k8s/
+    - kubectl get all
+  environment:
+    name: dev
+  only:
+    - main
